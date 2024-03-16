@@ -10,14 +10,14 @@
 
 ;;; Connections ;;;
 
-;;;                                                                   ;;;
-;                                     .--------.                        ;
-;                             Supply -|01 \/ 08|- Ground                ;
-;     UART (TashTalk) Rx ---> RX/RA5 -|02    07|- RA0    <--> GPIO 0    ;
-;     UART (TashTalk) Tx <--- TX/RA4 -|03    06|- RA1    <--> GPIO 1    ;
-;    UART (TashTalk) RTS --->    RA3 -|04    05|- RA2    <--> GPIO 2    ;
-;                                     '--------'                        ;
-;;;                                                                   ;;;
+;;;                                                                         ;;;
+;                                     .--------.                              ;
+;                             Supply -|01 \/ 08|- Ground                      ;
+;     UART (TashTalk) Rx ---> RX/RA5 -|02    07|- RA0    <--> GPIO 0          ;
+;     UART (TashTalk) Tx <--- TX/RA4 -|03    06|- RA1    <--> GPIO 1          ;
+;    UART (TashTalk) RTS --->    RA3 -|04    05|- RA2    ---> Soft UART Tx    ;
+;                                     '--------'                              ;
+;;;                                                                         ;;;
 
 
 ;;; Assembler Directives ;;;
@@ -120,8 +120,8 @@ MBLEN0	equ	0	; "
 	cblock	0x70	;Bank-common registers
 	
 	FLAGS		;You've got to have flags
-	X14
-	X13
+	UQPUSH
+	UQPOP
 	X12
 	X11
 	X10
@@ -293,7 +293,7 @@ Init
 	banksel	ANSELA		;All pins digital, not analog
 	clrf	ANSELA
 
-	banksel	TRISA		;Tx, output, Rx, RTS, RA2:0 inputs
+	banksel	TRISA		;Tx output, Rx, RTS, RA2:0 inputs
 	movlw	B'00101111'
 	movwf	TRISA
 
@@ -410,8 +410,8 @@ TashTI5	movf	FSR0L,W		; "
 	call	TashTm1		; "
 	decfsz	FSR1L,F		; "
 	bra	TashTI5		; "
-	movlp	high Main	;Jump into mainline
-	goto	Main		; "
+	movlp	high Mainline	;Jump into mainline
+	goto	Mainline	; "
 
 TashTm0	movlw	0		;Put a 0 in W
 TashTm1	movlb	3		;Transmit the byte in W
@@ -1196,8 +1196,161 @@ XFcs2	clrf	TXREG		;Placeholder for second byte of FCS
 
 ;;; Mainline ;;;
 
+Mainline
+	banksel	T1CON		;Set up Timer1 regs to be just after CCP1 regs,
+	clrf	TMR1H		; Timer1 ticks with instruction clock
+	movlw	B'00000001'
+	movwf	TMR1L
+	movwf	T1CON
+
+	banksel	CCP1CON		;CCP1 in compare mode, interrupt on match
+	clrf	CCPR1H
+	clrf	CCPR1L
+	movlw	B'00001010'
+	movwf	CCP1CON
+
+	banksel	LATA		;Default state of pins is high
+	movlw	B'00111111'
+	movwf	LATA
+
+	banksel	TRISA		;CCP1 pin is output
+	bcf	TRISA,RA2
+
+	clrf	UQPUSH		;Initialize key globals
+	clrf	UQPOP
+
+	;fall through
+
 Main
-	bra	$
+	call	PollMailboxes	;Poll mailboxes for incoming activity
+	call	PollCcp		;Poll whether the soft UART needs to be serviced
+	bra	Main		;Loop
+
+PollMailboxes
+	movlw	PA_VARH		;Point FSR0 to the start of PicoATP's state
+	movwf	FSR0H		; variables
+	movlw	PA_VARL		; "
+	movwf	FSR0L		; "
+	movlw	PA_MBOX		;Count down the number of mailboxes
+MboxLp	addfsr	FSR0,0x10	;Advance to the next mailbox
+	btfss	INDF0,MBINUSE	;We're looking for a mailbox that is in use and
+	bra	MboxNo		; contains an ATP TReq; if this isn't that, move
+	btfsc	INDF0,MBRESP	; on to the next one (if there is one)
+	bra	MboxNo		; "
+	btfsc	INDF0,MBNBP	; "
+	bra	MboxNo		; "
+	movlw	0x20		;Point FSR1 to the soft UART queue's push point
+	movwf	FSR1H		; "
+	movf	UQPUSH,W	; "
+	movwf	FSR1L		; "
+	movf	INDF0,W		;Get the length of the incoming payload
+	andlw	B'00000111'	; "
+	btfsc	STATUS,Z	;If it's 1, skip ahead since it only contains
+	bra	OnlyGio		; GPIO data
+	movwf	X0		;Save the count of UART bytes as a countdown
+	movlw	B'00001000'	;Point FSR0 to the first UART byte in the
+	addwf	FSR0L,F		; payload
+UartLp	moviw	++FSR0		;Put the next UART byte into the queue, wrapping
+	movwi	FSR1++		; the pointer if necessary
+	bcf	FSR1L,7		; "
+	movf	FSR1L,W		;If we're about to overflow the queue, pretend
+	xorwf	UQPOP,W		; we haven't received this TReq yet, we'll try
+	btfsc	STATUS,Z	; again later
+	return			; "
+	decfsz	X0,F		;Loop to push the next UART byte, if there is
+	bra	UartLp		; one
+	movf	FSR1L,W		;Update the queue push pointer
+	movwf	UQPUSH		; "
+OnlyGio	movf	FSR0L,W		;Rewind FSR0 to point to the TReq payload's GPIO
+	andlw	B'11110000'	; byte
+	iorlw	B'00001000'	; "
+	movwf	FSR0L		; "
+	movf	INDF0,W		;Write output latches of PORTA with the two LSBs
+	iorlw	B'00111100'	; "
+	movlb	2		; "
+	movwf	LATA		; "
+	lsrf	INDF0,W		;Write TRISA with the next two bits up
+	lsrf	WREG,W		; "
+	andlw	B'00000011'	; "
+	iorlw	B'00101000'	; "
+	movlb	1		; "
+	movwf	TRISA		; "
+	movlw	B'11111100'	;Replace low two bits of the TReq payload with
+	andwf	INDF0,F		; a current read of the GPIO pins
+	movlb	0		; "
+	movf	PORTA,W		; "
+	andlw	B'00000011'	; "
+	iorwf	INDF0,F		; "
+	movlw	B'11110000'	;Set the flag that this mailbox now contains a
+	andwf	FSR0L,F		; TResp to be sent
+	bsf	INDF0,MBRESP	; "
+	movlb	1		;Enable the Tx interrupt so the TResp can be
+	bsf	PIE1,TXIE	; sent
+	return			;Done
+MboxNo	decfsz	WREG,W		;Decrement mailbox count and loop if there is
+	bra	MboxLp		; another to check
+	return			;Else, done
+
+PollCcp
+	movlb	0		;If there is no interrupt, return
+	btfss	PIR1,CCP1IF	; "
+	return			; "
+	bcf	PIR1,CCP1IF	;Clear the interrupt
+	movlb	5		;If the CCP output is on, skip ahead
+	btfss	CCP1CON,CCP1M1	; "
+	bra	PollCc0		; "
+	movlw	0x03		;The CCP output is off, add 833 to CCPR1
+	addwf	CCPR1H,F	; "
+	movlw	0x41		; "
+	addwf	CCPR1L,F	; "
+	movlw	0		; "
+	addwfc	CCPR1H,F	; "
+	movf	UQPUSH,W	;If the queue is empty, return, we'll come back
+	xorwf	UQPOP,W		; here in one bit time
+	btfsc	STATUS,Z	; "
+	return			; "
+	movlw	B'10001001'	;Set CCP pin high (no change) and to go low on
+	movwf	CCP1CON		; match, set the MSB as a flag that a new byte
+	return			; is starting; return
+PollCc0	movlw	0x20		;Point FSR0 to the queue pop point
+	movwf	FSR0H		; "
+	movf	UQPOP,W		; "
+	movwf	FSR0L		; "
+	btfss	CCP1CON,CCP1M0	;If the CCP output is set, skip ahead
+	bra	PollCc2		; "
+PollCc1	movlw	0x03		;The CCP output is clear, add 833 to CCPR1
+	addwf	CCPR1H,F	; "
+	movlw	0x41		; "
+	addwf	CCPR1L,F	; "
+	movlw	0		; "
+	addwfc	CCPR1H,F	; "
+	lslf	CCP1CON,W	;Set or clear carry depending on MSB of CCP1CON
+	movlw	B'00001000'	;Set CCP to go high on match
+	movwf	CCP1CON		; "
+	rrf	INDF0,F		;Rotate carry into current byte
+	btfsc	STATUS,C	;If we rotated a 1 bit out of the current byte,
+	return			; return
+	bra	PollCc1		;Else, loop
+PollCc2	movlw	0x03		;The CCP output is set, add 833 to CCPR1
+	addwf	CCPR1H,F	; "
+	movlw	0x41		; "
+	addwf	CCPR1L,F	; "
+	movlw	0		; "
+	addwfc	CCPR1H,F	; "
+	lsrf	INDF0,F		;Shift the next bit out of the current byte
+	btfsc	STATUS,Z	;If that was the last bit, skip ahead
+	bra	PollCc3		; "
+	btfss	STATUS,C	;If we shifted out a zero, skip ahead
+	bra	PollCc4		; "
+	bra	PollCc2		;Else, loop
+PollCc3	incf	UQPOP,F		;Advance and loop the queue pop pointer
+	bcf	UQPOP,7		; "
+	movlw	B'00001010'	;Turn off the CCP output (no change) and set it
+	movwf	CCP1CON		; to interrupt on match
+	return			;Done
+PollCc4	movlw	B'00001001'	;Set CCP to go low on match
+	movwf	CCP1CON		; "
+	return			;Done
 
 
 ;;; Mainline Interrupt ;;;
