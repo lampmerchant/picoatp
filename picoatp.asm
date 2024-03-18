@@ -343,22 +343,22 @@ InitZLp	addfsr	FSR0,0x10
 	banksel	RCSTA		;Enable receiver now that interrupt is on
 	bsf	RCSTA,CREN
 
-TashTI0	movlb	3		;Send a sequence of 1024 0x00 bytes to TashTalk
+	movlb	3		;Send a sequence of 1024 0x00 bytes to TashTalk
 	movlw	4		; to ensure it's in a state to accept commands
 	movwf	FSR0H		; "
 	clrf	FSR0L		; "
-TashTI1	call	TashTm0		; "
+TashTI0	call	TashTm0		; "
 	decfsz	FSR0L,F		; "
-	bra	TashTI1		; "
+	bra	TashTI0		; "
 	decfsz	FSR0H,F		; "
-	bra	TashTI1		; "
+	bra	TashTI0		; "
 	movlw	0x02		;Send an 0x02 (Set Node IDs) command followed by
 	call	TashTm1		; 32 0x00 bytes to ensure that the node IDs
 	movlw	32		; bitmap is clear and TashTalk doesn't respond
 	movwf	FSR0L		; automatically to any frames it receives
-TashTI2	call	TashTm0		; "
+TashTI1	call	TashTm0		; "
 	decfsz	FSR0L,F		; "
-	bra	TashTI2		; "
+	bra	TashTI1		; "
 	movlw	0x03		;Send an 0x03 (Set Features) command followed by
 	call	TashTm1		; 0b11000000 to enable CRC calculation and
 	movlw	B'11000000'	; checking
@@ -366,7 +366,7 @@ TashTI2	call	TashTm0		; "
 	movlb	0		;Reset Timer0 again so we can use it as a delay
 	clrf	TMR0		; timer
 	movlw	0		;Reset the attempts counter to 0
-TashTI4	movwi	RCVTMP1[FSR1]	; "
+TashTI2	movwi	RCVTMP1[FSR1]	; "
 	bcf	INTCON,TMR0IF	;Clear Timer0 interrupt
 	movlw	0x01		;Send an 0x01 (Transmit Frame) command with an
 	call	TashTm1		; ENQ (0x81) frame for the address we're trying
@@ -382,7 +382,7 @@ TashTI4	movwi	RCVTMP1[FSR1]	; "
 	moviw	RCVTMP1[FSR1]	;Increment the attempts counter; if it hasn't
 	addlw	1		; rolled over, loop around to send another ENQ
 	btfss	STATUS,Z	; "
-	bra	TashTI4		; "
+	bra	TashTI2		; "
 	moviw	RCVTMP0[FSR1]	;Nobody's responded on our node address, so
 	movwi	OURNODE[FSR1]	; claim it for ourselves
 	movlw	0x02		;Send an 0x02 (Set Node IDs) command
@@ -404,12 +404,12 @@ TashTI4	movwi	RCVTMP1[FSR1]	; "
 	movwf	FSR0H		; "
 	movlw	32		;Load the node ID bitmap with the bit for this
 	movwf	FSR1L		; node ID set
-TashTI5	movf	FSR0L,W		; "
+TashTI3	movf	FSR0L,W		; "
 	decfsz	FSR0H,F		; "
 	movlw	0		; "
 	call	TashTm1		; "
 	decfsz	FSR1L,F		; "
-	bra	TashTI5		; "
+	bra	TashTI3		; "
 	movlp	high Mainline	;Jump into mainline
 	goto	Mainline	; "
 
