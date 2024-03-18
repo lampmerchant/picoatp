@@ -267,7 +267,7 @@ Init
 	btfss	OSCSTAT,PLLR	; gears up to 8 MHz
 	bra	$-1
 
-	banksel	RS_IOCN		;RA5 sets IOCAN[IOCAF5] on neg edge
+	banksel	RS_IOCN		;RTS pin interrupts on negative edge
 	movlw	1 << RS_PIN
 	movwf	RS_IOCN
 
