@@ -41,3 +41,5 @@ The second through eighth bytes, if present, are unchanged from the request.
 ## Building Firmware
 
 Building the firmware requires Microchip MPASM, which is included with their development environment, MPLAB. Note that you must use MPLAB X version 5.35 or earlier or MPLAB 8 as later versions of MPLAB X have removed MPASM.
+
+The firmware can also be built using gpasm, an MPASM-compatible assembler that is part of the [gputils](https://gputils.sourceforge.io/) project.  Please note, however, that compatibility with gpasm is not tested.
